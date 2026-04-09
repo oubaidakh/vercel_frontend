@@ -85,10 +85,15 @@
     function changeBackend() {
       const newUrl = prompt('Enter your Ngrok backend URL:', API_BASE || 'https://xyz.ngrok.app');
       if (newUrl) {
-        API_BASE = newUrl.trim().replace(/\/$/, '');
-        localStorage.setItem('backend_url', API_BASE);
-        document.getElementById('backend-label').textContent = new URL(API_BASE).hostname;
-        location.reload();
+        try {
+          const origin = new URL(newUrl.trim()).origin;
+          API_BASE = origin;
+          localStorage.setItem('backend_url', API_BASE);
+          document.getElementById('backend-label').textContent = new URL(API_BASE).hostname;
+          location.reload();
+        } catch (e) {
+          alert('Invalid URL format. Please enter a valid URL (e.g., https://xyz.ngrok.app)');
+        }
       }
     }
 
@@ -96,8 +101,14 @@
       if (!API_BASE) {
         const entered = prompt('🔌 Enter your PC Backend URL from Ngrok (e.g., https://xyz.ngrok.app):');
         if (entered) {
-          API_BASE = entered.trim().replace(/\/$/, '');
-          localStorage.setItem('backend_url', API_BASE);
+          try {
+            const origin = new URL(entered.trim()).origin;
+            API_BASE = origin;
+            localStorage.setItem('backend_url', API_BASE);
+          } catch (e) {
+            alert('Invalid URL. Please refresh and try again.');
+            return;
+          }
         } else {
           document.getElementById('backend-dot').classList.add('error');
           document.getElementById('backend-label').textContent = 'Not Connected';
