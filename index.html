@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Fire Alert Dashboard</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: sans-serif; }
+    body { background: #0f0f0f; color: #eee; display: flex; flex-direction: column; height: 100vh; }
+    nav { background: #111; padding: 12px 20px; border-bottom: 2px solid #333; display: flex; align-items: center; gap: 20px; }
+    nav a { color: #fff; text-decoration: none; font-size: 14px; padding: 6px 12px; border-radius: 4px; }
+    nav a.active { background: #e24b4a; color: #fff; font-weight: 600; }
+    nav a:hover:not(.active) { background: #333; }
+    #main-container { display: flex; flex: 1; overflow: hidden; }
+    #map { flex: 1; }
+    #sidebar { width: 320px; background: #1a1a1a; display: flex; flex-direction: column; }
+    #sidebar h2 { padding: 16px; font-size: 15px; font-weight: 500; border-bottom: 1px solid #333; color: #fff; }
+    #stats { display: flex; gap: 8px; padding: 12px; border-bottom: 1px solid #333; }
+    .stat { flex: 1; background: #222; border-radius: 8px; padding: 10px; text-align: center; }
+    .stat .val { font-size: 22px; font-weight: 500; color: #fff; }
+    .stat .lbl { font-size: 11px; color: #888; margin-top: 2px; }
+    
+    #devices-list { padding: 12px; border-bottom: 1px solid #333; max-height: 200px; overflow-y: auto; }
+    .device-card { background: #222; border-radius: 8px; padding: 10px; margin-bottom: 6px; display: flex; align-items: center; justify-content: space-between; }
+    .device-info { display: flex; flex-direction: column; gap: 4px; }
+    .device-name { font-size: 13px; font-weight: 500; color: #fff; }
+    .device-loc { font-size: 11px; color: #888; }
+    .status-dot { width: 10px; height: 10px; border-radius: 50%; }
+    .status-online { background-color: #28a745; box-shadow: 0 0 5px #28a745; }
+    .status-offline { background-color: #dc3545; }
+    
+    #alert-list { flex: 1; overflow-y: auto; padding: 8px; }
+    .alert-card { background: #222; border-radius: 8px; padding: 12px; margin-bottom: 8px; border-left: 3px solid #e24b4a; }
+    .alert-card.medium { border-color: #ef9f27; }
+    .alert-card.low    { border-color: #639922; }
+    .alert-card .header { display: flex; justify-content: space-between; align-items: baseline; }
+    .alert-card .time  { font-size: 11px; color: #888; }
+    .alert-card .sev   { font-size: 12px; font-weight: 500; text-transform: uppercase; letter-spacing: .5px; }
+    .alert-card .device { font-size: 11px; font-weight: 600; color: #00d4ff; background:#111; padding:4px 8px; border-radius:4px; margin-bottom: 6px; display: inline-block;}
+    .sev.high   { color: #e24b4a; }
+    .sev.medium { color: #ef9f27; }
+    .sev.low    { color: #639922; }
+    .alert-card .loc   { font-size: 12px; color: #aaa; margin-top: 4px; }
+    #pulse { display:inline-block; width:8px; height:8px; border-radius:50%; background:#e24b4a; margin-right:6px; animation: blink 1s infinite; }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+    .backend-btn { margin-left: auto; background: #2a2a2a; color: #aaa; border: 1px solid #444; padding: 5px 12px; border-radius: 4px; font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 6px; text-decoration: none; }
+    .backend-btn:hover { background: #333; color: #fff; }
+    .backend-dot { width: 8px; height: 8px; border-radius: 50%; background: #2ecc71; box-shadow: 0 0 5px #2ecc71; flex-shrink: 0; }
+    .backend-dot.error { background: #e74c3c; box-shadow: 0 0 5px #e74c3c; }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="index.html" class="active">🔥 Live Dashboard</a>
+    <a href="manage.html">⚙️ Manage Devices</a>
+    <button class="backend-btn" onclick="changeBackend()" title="Click to update your Ngrok backend URL">
+      <div class="backend-dot" id="backend-dot"></div>
+      <span id="backend-label">PC Backend</span>
+    </button>
+  </nav>
+  <div id="main-container">
+    <div id="map"></div>
+    <div id="sidebar">
+      <h2><span id="pulse"></span>Live Fire Monitor</h2>
+      <div id="stats">
+        <div class="stat"><div class="val" id="total">0</div><div class="lbl">Total alerts</div></div>
+        <div class="stat"><div class="val" id="high-count">0</div><div class="lbl">High severity</div></div>
+      </div>
+      
+      <div id="devices-section">
+        <h2 style="font-size: 13px; color: #aaa; background: transparent; padding-bottom: 8px; border: none;">Active Devices</h2>
+        <div id="devices-list"></div>
+      </div>
+      
+      <div id="alert-list"></div>
+    </div>
+  </div>
+
+  
+  <script>
+    let API_BASE = localStorage.getItem('backend_url') || '';
+
+    function changeBackend() {
+      const newUrl = prompt('Enter your Ngrok backend URL:', API_BASE || 'https://xyz.ngrok.app');
+      if (newUrl) {
+        API_BASE = newUrl.trim().replace(/\/$/, '');
+        localStorage.setItem('backend_url', API_BASE);
+        document.getElementById('backend-label').textContent = new URL(API_BASE).hostname;
+        location.reload();
+      }
+    }
+
+    function initBackend() {
+      if (!API_BASE) {
+        const entered = prompt('🔌 Enter your PC Backend URL from Ngrok (e.g., https://xyz.ngrok.app):');
+        if (entered) {
+          API_BASE = entered.trim().replace(/\/$/, '');
+          localStorage.setItem('backend_url', API_BASE);
+        } else {
+          document.getElementById('backend-dot').classList.add('error');
+          document.getElementById('backend-label').textContent = 'Not Connected';
+          return;
+        }
+      }
+      try {
+        document.getElementById('backend-label').textContent = new URL(API_BASE).hostname;
+      } catch(e) {
+        document.getElementById('backend-label').textContent = 'Bad URL';
+        document.getElementById('backend-dot').classList.add('error');
+      }
+    }
+
+    initBackend();
+  </script>
+
+  <script>
+    const map = L.map('map').setView([36.7, 3.0], 6);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+    let totalCount = 0, highCount = 0;
+    const fireIcon = L.divIcon({ className: '', html: '<div style="font-size:22px;line-height:1">&#128293;</div>', iconSize:[28,28] });
+    const cameraIcon = L.divIcon({ className: '', html: '<div style="font-size:20px;line-height:1">&#128247;</div>', iconSize:[24,24] });
+
+    let deviceMarkers = {};
+    let deviceData = {};
+
+    function updateDeviceUI() {
+      const list = document.getElementById('devices-list');
+      list.innerHTML = '';
+      
+      const now = new Date();
+      for (const [id, info] of Object.entries(deviceData)) {
+        // Evaluate online strictly locally based on the last_seen DB string we parsed implicitly
+        const dtSeconds = info.last_seen ? (now - new Date(info.last_seen + "Z")) / 1000 : (now - new Date(info.last_seen)) / 1000;
+        const isOnline = dtSeconds < 30; // Check DB latency delta reliably
+        
+        const card = document.createElement('div');
+        card.className = 'device-card';
+        card.innerHTML = `
+          <div class="device-info">
+            <span class="device-name">${info.display_name || id} ${info.zone ? '('+info.zone+')' : ''}</span>
+            <span class="device-loc">GPS: ${info.last_lat ? info.last_lat.toFixed(4) : '?'} , ${info.last_lon ? info.last_lon.toFixed(4) : '?'}</span>
+          </div>
+          <div class="status-dot ${isOnline ? 'status-online' : 'status-offline'}"></div>
+        `;
+        list.appendChild(card);
+      }
+    }
+
+    function addAlert(a) {
+      totalCount++;
+      if (a.severity === 'high') highCount++;
+      document.getElementById('total').textContent = totalCount;
+      document.getElementById('high-count').textContent = highCount;
+
+      const deviceLabel = a.display_name ? `${a.display_name} (${a.zone || ''})` : (a.device_id || 'unknown');
+
+      if (a.latitude && a.longitude) {
+        L.marker([a.latitude, a.longitude], { icon: fireIcon })
+          .addTo(map)
+          .bindPopup(`<b>${a.severity.toUpperCase()}</b><br>Device: ${deviceLabel}<br>${a.confidence*100}% confidence<br>${new Date(a.timestamp + "Z").toLocaleString()}`);
+      }
+
+      const card = document.createElement('div');
+      card.className = `alert-card ${a.severity}`;
+      const loc = a.latitude ? `${a.latitude.toFixed(4)}, ${a.longitude.toFixed(4)}` : 'No GPS';
+      card.innerHTML = `
+        <div class="device">📷 ${deviceLabel}</div>
+        <div class="header">
+          <div class="sev ${a.severity}">${a.severity}</div>
+          <div class="time">${new Date(a.timestamp + "Z").toLocaleTimeString()}</div>
+        </div>
+        <div class="loc">GPS: ${loc} — ${(a.confidence*100).toFixed(0)}% confidence</div>`;
+      document.getElementById('alert-list').prepend(card);
+    }
+
+    fetch(API_BASE + '/alerts').then(r => r.json()).then(alerts => alerts.reverse().forEach(addAlert));
+    
+    fetch(API_BASE + '/devices').then(r => r.json()).then(devices => {
+      devices.forEach(d => {
+        deviceData[d.device_id] = d;
+        if (d.last_lat && d.last_lon) {
+          deviceMarkers[d.device_id] = L.marker([d.last_lat, d.last_lon], { icon: cameraIcon })
+            .addTo(map)
+            .bindPopup(`<b>${d.display_name || d.device_id}</b><br>${d.zone||''}`);
+        }
+      });
+      updateDeviceUI();
+    });
+
+    const socket = io(API_BASE);
+    socket.on('new_alert', addAlert);
+    socket.on('device_update', (d) => {
+      deviceData[d.device_id] = d;
+      if (d.last_lat && d.last_lon) {
+        if (deviceMarkers[d.device_id]) {
+          deviceMarkers[d.device_id].setLatLng([d.last_lat, d.last_lon]);
+        } else {
+          deviceMarkers[d.device_id] = L.marker([d.last_lat, d.last_lon], { icon: cameraIcon })
+            .addTo(map)
+            .bindPopup(`<b>${d.display_name || d.device_id}</b><br>${d.zone||''}`);
+        }
+      }
+      updateDeviceUI();
+    });
+    
+    // Periodically re-render device UI to update online/offline status gracefully
+    setInterval(updateDeviceUI, 5000);
+  </script>
+</body>
+</html>

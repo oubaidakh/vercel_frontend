@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Mobile Feed Client</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: sans-serif; }
+    body { background: #000; color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; min-height: 100vh; padding: 20px;}
+    
+    .header { text-align: center; margin-bottom: 20px; width: 100%; max-width: 400px; }
+    h1 { font-size: 22px; font-weight: 500; margin-bottom: 5px; }
+    .zone { font-size: 14px; color: #00d4ff; }
+    
+    .video-container { width: 100%; max-width: 400px; aspect-ratio: 4/3; background: #111; border-radius: 12px; overflow: hidden; position: relative; margin-bottom: 20px; border: 2px solid #333;}
+    video { width: 100%; height: 100%; object-fit: cover; }
+    canvas { display: none; }
+    
+    .status-bar { width: 100%; max-width: 400px; display: flex; justify-content: space-between; align-items: center; background: #1a1a1a; padding: 15px; border-radius: 8px; margin-bottom: 20px;}
+    .indicator { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+    .dot { width: 12px; height: 12px; border-radius: 50%; background: #e74c3c; box-shadow: 0 0 5px #e74c3c; }
+    .dot.active { background: #2ecc71; box-shadow: 0 0 8px #2ecc71; }
+    .gps-coords { font-size: 12px; color: #aaa; font-family: monospace; }
+    
+    button { width: 100%; max-width: 400px; padding: 18px; border-radius: 12px; border: none; font-size: 18px; font-weight: 600; cursor: pointer; transition: 0.2s; background: #00d4ff; color: #000;}
+    button:active { transform: scale(0.98); }
+    button.stop { background: #e24b4a; color: #fff; }
+    
+    #log { margin-top: 15px; width: 100%; max-width: 400px; font-size: 11px; color: #666; font-family: monospace; text-align: center; }
+    #fire-warning { display: none; background: rgba(226, 75, 74, 0.9); border: 2px solid #fff; color: white; padding: 15px; border-radius: 8px; text-align: center; font-weight: bold; font-size: 20px; width: 100%; max-width: 400px; margin-bottom: 20px; animation: pulse 0.8s infinite;}
+    @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.05); } 100% { transform: scale(1); } }
+  </style>
+</head>
+<body>
+  
+  <div class="header">
+    <h1 id="dev-name">Device ID: Loading...</h1>
+    <div class="zone" id="dev-zone">Initializing Module</div>
+  </div>
+  
+  <div id="fire-warning">🔥 FIRE DETECTED!</div>
+  
+  <div class="video-container">
+    <video id="videoElement" autoplay playsinline muted></video>
+    <canvas id="canvasElement"></canvas>
+  </div>
+  
+  <div class="status-bar">
+    <div class="indicator">
+      <div class="dot" id="status-dot"></div>
+      <span id="status-text">Stopped</span>
+    </div>
+    <div class="gps-coords" id="gps-text">GPS: Pending...</div>
+  </div>
+  
+  <button id="toggleBtn" onclick="toggleMonitoring()">START MONITORING</button>
+  <div id="log">Device ready. Press start.</div>
+  <div id="backend-status" onclick="changeBackend()" style="margin-top:10px; font-size:11px; color:#555; cursor:pointer; font-family:monospace;">🔌 Tap to set backend URL</div>
+
+  <script>
+    let API_BASE = localStorage.getItem('backend_url') || '';
+
+    function changeBackend() {
+      const newUrl = prompt('Enter your Ngrok backend URL:', API_BASE || 'https://xyz.ngrok.app');
+      if (newUrl) {
+        API_BASE = newUrl.trim().replace(/\/$/, '');
+        localStorage.setItem('backend_url', API_BASE);
+        location.reload();
+      }
+    }
+
+    function initBackend() {
+      if (!API_BASE) {
+        const entered = prompt('🔌 Enter your PC Backend URL from Ngrok (e.g., https://xyz.ngrok.app):');
+        if (entered) {
+          API_BASE = entered.trim().replace(/\/$/, '');
+          localStorage.setItem('backend_url', API_BASE);
+        } else {
+          document.getElementById('backend-status').textContent = '⚠️ No backend URL set. Tap to configure.';
+          document.getElementById('backend-status').style.color = '#e74c3c';
+          document.getElementById('backend-status').style.cursor = 'pointer';
+          document.getElementById('backend-status').onclick = changeBackend;
+          return;
+        }
+      }
+      try {
+        document.getElementById('backend-status').textContent = `🟢 Connected: ${new URL(API_BASE).hostname}`;
+      } catch(e) {}
+    }
+
+    initBackend();
+  </script>
+
+  <script>
+    // Extract query params
+    const urlParams = new URLSearchParams(window.location.search);
+    const deviceId = urlParams.get('device_id') || 'unregistered_web_client';
+    
+    document.getElementById('dev-name').innerText = `Device: ${deviceId}`;
+    
+    let isMonitoring = false;
+    let video = document.getElementById('videoElement');
+    let canvas = document.getElementById('canvasElement');
+    let ctx = canvas.getContext('2d', { willReadFrequently: true });
+    let localLat = null;
+    let localLon = null;
+    let sendInterval = null;
+    let pingInterval = null;
+    let stream = null;
+
+    // Fetch device info to show proper name
+    fetch(API_BASE + '/devices').then(r => r.json()).then(devices => {
+      const dev = devices.find(d => d.device_id === deviceId);
+      if(dev) {
+        document.getElementById('dev-name').innerText = dev.display_name;
+        document.getElementById('dev-zone').innerText = `Zone: ${dev.zone}`;
+      } else {
+        document.getElementById('dev-zone').innerText = 'System Configuration Missing';
+      }
+    });
+
+    // Start GPS Tracking
+    if(navigator.geolocation) {
+        navigator.geolocation.watchPosition((pos) => {
+          localLat = pos.coords.latitude;
+          localLon = pos.coords.longitude;
+          document.getElementById('gps-text').innerText = `${localLat.toFixed(4)}, ${localLon.toFixed(4)}`;
+        }, (err) => {
+          document.getElementById('gps-text').innerText = `GPS Error: ${err.message}`;
+        }, { enableHighAccuracy: true });
+    } else {
+        document.getElementById('gps-text').innerText = `GPS Unavailable`;
+    }
+
+    async function toggleMonitoring() {
+      if(isMonitoring) {
+        stopMonitoring();
+      } else {
+        startMonitoring();
+      }
+    }
+
+    async function startMonitoring() {
+      try {
+        // Enforce rear camera conceptually, or let browser decide
+        stream = await navigator.mediaDevices.getUserMedia({ 
+          video: { facingMode: "environment", width: { ideal: 640 }, height: { ideal: 480 } } 
+        });
+        video.srcObject = stream;
+        
+        isMonitoring = true;
+        
+        // Update UI
+        document.getElementById('toggleBtn').innerText = 'STOP MONITORING';
+        document.getElementById('toggleBtn').classList.add('stop');
+        document.getElementById('status-dot').classList.add('active');
+        document.getElementById('status-text').innerText = 'Transmitting Feed & Pings';
+        
+        // Start loops
+        sendInterval = setInterval(sendFrame, 2000);  // 1 frame every 2s
+        pingInterval = setInterval(sendPing, 10000);  // ping every 10s
+        
+        // Initial ping
+        sendPing();
+        
+        document.getElementById('log').innerText = 'Monitoring activated securely.';
+      } catch (e) {
+        alert("Camera access denied or unavailabe!");
+        document.getElementById('log').innerText = `Camera Error: ${e}`;
+      }
+    }
+
+    function stopMonitoring() {
+      isMonitoring = false;
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+      }
+      clearInterval(sendInterval);
+      clearInterval(pingInterval);
+      
+      document.getElementById('toggleBtn').innerText = 'START MONITORING';
+      document.getElementById('toggleBtn').classList.remove('stop');
+      document.getElementById('status-dot').classList.remove('active');
+      document.getElementById('status-text').innerText = 'Stopped';
+      document.getElementById('log').innerText = 'Camera feed securely closed.';
+    }
+
+    function sendPing() {
+      fetch(API_BASE + '/ping', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          device_id: deviceId,
+          latitude: localLat,
+          longitude: localLon
+        })
+      });
+    }
+
+    function sendFrame() {
+      if(!isMonitoring || video.videoWidth === 0) return;
+      
+      // Match canvas to video size
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      
+      // Convert to base64 JPEG
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.7); // 70% quality
+      // remove standard 'data:image/jpeg;base64,' prefix to match phone script
+      const b64 = dataUrl.split(',')[1];
+      
+      const payload = {
+        device_id: deviceId,
+        latitude: localLat,
+        longitude: localLon,
+        frame: b64
+      };
+      
+      fetch(API_BASE + '/detect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }).then(r => r.json()).then(res => {
+        if(res.status === 'alert_sent') {
+            document.getElementById('log').innerText = `Fire Sent! Confidence ${(res.confidence*100).toFixed(0)}%`;
+            document.getElementById('fire-warning').style.display = 'block';
+        } else {
+            document.getElementById('log').innerText = `All clear. Detection confidence: ${(res.confidence*100).toFixed(0)}%`;
+            document.getElementById('fire-warning').style.display = 'none';
+        }
+      }).catch(e => {
+        document.getElementById('log').innerText = `Upload Error`;
+      });
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Manage Devices - Fire Alert</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: sans-serif; }
+    body { background: #0f0f0f; color: #eee; min-height: 100vh; }
+    nav { background: #111; padding: 12px 20px; border-bottom: 2px solid #333; display: flex; align-items: center; gap: 20px; }
+    nav a { color: #fff; text-decoration: none; font-size: 14px; padding: 6px 12px; border-radius: 4px; }
+    nav a.active { background: #e24b4a; color: #fff; font-weight: 600; }
+    nav a:hover:not(.active) { background: #333; }
+    
+    .container { max-width: 1000px; margin: 40px auto; padding: 20px; }
+    h1 { font-size: 24px; font-weight: 500; margin-bottom: 24px; color: #fff; border-bottom: 1px solid #333; padding-bottom: 12px; }
+    
+    .card { background: #1a1a1a; border-radius: 8px; padding: 24px; margin-bottom: 24px; border: 1px solid #333; }
+    .card h2 { font-size: 18px; font-weight: 500; margin-bottom: 16px; color: #ddd; }
+    
+    .form-group { margin-bottom: 16px; }
+    label { display: block; margin-bottom: 6px; font-size: 13px; color: #aaa; }
+    input { width: 100%; padding: 10px; background: #222; border: 1px solid #444; color: #fff; border-radius: 4px; font-size: 14px; }
+    input:focus { outline: none; border-color: #00d4ff; }
+    
+    button { background: #00d4ff; color: #000; border: none; padding: 10px 20px; font-weight: 600; font-size: 14px; border-radius: 4px; cursor: pointer; transition: 0.2s; }
+    button:hover { background: #00b8e6; }
+    .btn-danger { background: #e24b4a; color: #fff; }
+    .btn-danger:hover { background: #cb3d3c; }
+    .btn-sm { padding: 6px 12px; font-size: 12px; }
+    
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th, td { padding: 12px; text-align: left; border-bottom: 1px solid #333; font-size: 14px; }
+    th { color: #888; font-weight: 500; }
+    
+    .status { padding: 4px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; display: inline-block;}
+    .status.online { background: rgba(40, 167, 69, 0.2); color: #2ecc71; }
+    .status.offline { background: rgba(220, 53, 69, 0.2); color: #e74c3c; }
+    
+    .qr-container { display: flex; align-items: center; justify-content: center; background: #fff; padding: 10px; border-radius: 4px; width: 148px; height: 148px;}
+    .actions { display: flex; gap: 8px; }
+    .backend-btn { margin-left: auto; background: #2a2a2a; color: #aaa; border: 1px solid #444; padding: 5px 12px; border-radius: 4px; font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 6px; }
+    .backend-btn:hover { background: #333; color: #fff; }
+    .backend-dot { width: 8px; height: 8px; border-radius: 50%; background: #2ecc71; box-shadow: 0 0 5px #2ecc71; flex-shrink: 0; }
+    .backend-dot.error { background: #e74c3c; box-shadow: 0 0 5px #e74c3c; }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="index.html">🔥 Live Dashboard</a>
+    <a href="manage.html" class="active">⚙️ Manage Devices</a>
+    <button class="backend-btn" onclick="changeBackend()" title="Click to update your Ngrok backend URL">
+      <div class="backend-dot" id="backend-dot"></div>
+      <span id="backend-label">PC Backend</span>
+    </button>
+  </nav>
+
+  <div class="container">
+    <h1>Device Management</h1>
+    
+    <div class="card">
+      <h2>Register / Update Device</h2>
+      <form id="reg-form" onsubmit="registerDevice(event)">
+        <div style="display: flex; gap: 16px;">
+          <div class="form-group" style="flex: 1;">
+            <label>Device ID</label>
+            <input type="text" id="dev_id" placeholder="e.g. entrance_cam_1" required>
+          </div>
+          <div class="form-group" style="flex: 1;">
+            <label>Display Name</label>
+            <input type="text" id="dev_name" placeholder="e.g. Front Gate Camera" required>
+          </div>
+          <div class="form-group" style="flex: 1;">
+            <label>Zone</label>
+            <input type="text" id="dev_zone" placeholder="e.g. North Perimeter" required>
+          </div>
+        </div>
+        <button type="submit">Save Device</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>Registered Devices</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Device</th>
+            <th>Zone</th>
+            <th>Status</th>
+            <th>Last Seen</th>
+            <th>Last GPS</th>
+            <th>Pairing QR</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="devices-table">
+          <!-- Rows injected via JS -->
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    let API_BASE = localStorage.getItem('backend_url') || '';
+
+    function changeBackend() {
+      const newUrl = prompt('Enter your Ngrok backend URL:', API_BASE || 'https://xyz.ngrok.app');
+      if (newUrl) {
+        API_BASE = newUrl.trim().replace(/\/$/, '');
+        localStorage.setItem('backend_url', API_BASE);
+        location.reload();
+      }
+    }
+
+    function initBackend() {
+      if (!API_BASE) {
+        const entered = prompt('🔌 Enter your PC Backend URL from Ngrok (e.g., https://xyz.ngrok.app):');
+        if (entered) {
+          API_BASE = entered.trim().replace(/\/$/, '');
+          localStorage.setItem('backend_url', API_BASE);
+        } else {
+          document.getElementById('backend-dot').classList.add('error');
+          document.getElementById('backend-label').textContent = 'Not Connected';
+          return;
+        }
+      }
+      try {
+        document.getElementById('backend-label').textContent = new URL(API_BASE).hostname;
+      } catch(e) {
+        document.getElementById('backend-dot').classList.add('error');
+        document.getElementById('backend-label').textContent = 'Bad URL';
+      }
+    }
+
+    initBackend();
+  </script>
+
+  <script>
+    async function loadDevices() {
+      const resp = await fetch(API_BASE + '/devices');
+      const devices = await resp.json();
+      const tbody = document.getElementById('devices-table');
+      
+      const serverResp = await fetch(API_BASE + '/server-url');
+      const serverData = await serverResp.json();
+      const serverUrl = serverData.url;
+
+      // Create a map to track which ones are alive to remove deleted ones
+      const deviceIdMap = {};
+
+      devices.forEach(d => {
+        deviceIdMap[d.device_id] = true;
+        
+        let localDate = d.last_seen ? new Date(d.last_seen + "Z").toLocaleString() : 'Never';
+        let gpsText = (d.last_lat && d.last_lon) ? `${d.last_lat.toFixed(4)}, ${d.last_lon.toFixed(4)}` : 'None';
+        
+        let tr = document.getElementById(`row-${d.device_id}`);
+        
+        if (!tr) {
+          tr = document.createElement('tr');
+          tr.id = `row-${d.device_id}`;
+          tr.innerHTML = `
+            <td>
+              <strong>${d.display_name}</strong><br>
+              <span style="color:#aaa; font-size:12px">${d.device_id}</span>
+            </td>
+            <td>${d.zone}</td>
+            <td><span id="status-${d.device_id}" class="status ${d.status}">${d.status.toUpperCase()}</span></td>
+            <td id="seen-${d.device_id}">${localDate}</td>
+            <td id="gps-${d.device_id}">${gpsText}</td>
+            <td>
+              <div id="qr-${d.device_id}" class="qr-container"></div>
+            </td>
+            <td>
+              <div class="actions">
+                <button class="btn-sm" onclick="editDevice('${d.device_id}', '${d.display_name}', '${d.zone}')">Edit</button>
+                <button class="btn-sm btn-danger" onclick="deleteDevice('${d.device_id}')">Delete</button>
+              </div>
+            </td>
+          `;
+          tbody.appendChild(tr);
+          
+          // Generate QR Code only once!
+          // QR points to this Vercel site's client page, not the backend directly
+          const url = `${window.location.origin}/client.html?device_id=${encodeURIComponent(d.device_id)}`;
+          new QRCode(document.getElementById(`qr-${d.device_id}`), {
+            text: url,
+            width: 128,
+            height: 128,
+            colorDark : "#000000",
+            colorLight : "#ffffff",
+            correctLevel : QRCode.CorrectLevel.L
+          });
+        } else {
+          // Fast DOM update for dynamic values without tearing down QRCode div
+          document.getElementById(`status-${d.device_id}`).className = `status ${d.status}`;
+          document.getElementById(`status-${d.device_id}`).innerText = d.status.toUpperCase();
+          document.getElementById(`seen-${d.device_id}`).innerText = localDate;
+          document.getElementById(`gps-${d.device_id}`).innerText = gpsText;
+        }
+      });
+      
+      // Cleanup UI rows for deleted devices
+      Array.from(tbody.children).forEach(row => {
+        const id = row.id.replace('row-', '');
+        if (!deviceIdMap[id]) row.remove();
+      });
+    }
+
+    async function registerDevice(e) {
+      e.preventDefault();
+      const payload = {
+        device_id: document.getElementById('dev_id').value,
+        display_name: document.getElementById('dev_name').value,
+        zone: document.getElementById('dev_zone').value
+      };
+      
+      await fetch(API_BASE + '/devices/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      
+      document.getElementById('reg-form').reset();
+      loadDevices();
+    }
+
+    function editDevice(id, name, zone) {
+      document.getElementById('dev_id').value = id;
+      document.getElementById('dev_name').value = name;
+      document.getElementById('dev_zone').value = zone;
+      window.scrollTo(0,0);
+    }
+
+    async function deleteDevice(id) {
+      if(confirm(`Are you sure you want to delete ${id}?`)) {
+        await fetch(API_BASE + `/devices/${id}`, { method: 'DELETE' });
+        loadDevices();
+      }
+    }
+
+    // Load initial
+    loadDevices();
+    // Auto refresh status securely
+    setInterval(loadDevices, 5000);
+  </script>
+</body>
+</html>
