@@ -152,10 +152,6 @@
       const devices = await resp.json();
       const tbody = document.getElementById('devices-table');
       
-      const serverResp = await fetch(API_BASE + '/server-url');
-      const serverData = await serverResp.json();
-      const serverUrl = serverData.url;
-
       // Create a map to track which ones are alive to remove deleted ones
       const deviceIdMap = {};
 
